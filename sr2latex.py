@@ -21,7 +21,7 @@ def get_baselist(args):
         # Fetch the list from the server
         (url, authobj) = _get_connection(args)
         payload = {'final': 'true'}
-        r = requests.get("%s/lemmareadings", params=payload, auth=authobj)
+        r = requests.get("%s/lemmareadings" % url, params=payload, auth=authobj)
         r.raise_for_status()
         baselist = r.json()
     return baselist
@@ -40,7 +40,7 @@ def get_variants(args):
         for ostr in args.option:
             opt = ostr.split('=')
             payload[opt[0]] = opt[1]
-        r = requests.get("%s/lemmareadings", params=payload, auth=authobj)
+        r = requests.get("%s/variants" % url, params=payload, auth=authobj)
         r.raise_for_status()
         variantlist = r.json()
     return variantlist
@@ -154,6 +154,7 @@ def generate_latex(baselist, applist, langtag):
         join_next = r.get('join_next', False)
     print(output)
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -185,7 +186,7 @@ if __name__ == '__main__':
     )
     remote.add_argument(
         "-t",
-        "--tradition-id",
+        "--tradition",
         help="ID of tradition to process"
     )
     remote.add_argument(
