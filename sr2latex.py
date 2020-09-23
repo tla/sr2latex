@@ -46,6 +46,21 @@ def get_variants(args):
     return variantlist
 
 
+def get_annotations(args):
+    if args.local:
+        annotationlist = []
+        # Was an annotation list given to us?
+        if 'annotationlist' in args:
+            with open(args.annotationlist, encoding="utf-8") as f:
+                annotationlist = json.load(f)
+    else:
+        (url, authobj) = _get_connection(args)
+        r = requests.get("%s/annotations" % url, auth=authobj)
+        r.raise_for_status()
+        annotationlist = r.json()
+    return annotationlist
+
+
 def make_applookup(variantlist):
     """Make a lookup table of lemma reading ID -> list of variants that need to be footnoted at that lemma."""
     applookup = {}
@@ -62,6 +77,29 @@ def make_applookup(variantlist):
         else:
             applookup[rid] = [v]
     return applookup
+
+
+def _get_target(annotation, ltype):
+    """Return the target ID of the given link type in the given annotation."""
+    for l in annotation.get('links'):
+        if l.get('type') == ltype:
+            return l.get('target')
+    return None
+
+
+def make_annolookup(annotationlist):
+    """Make a lookup table of lemma reading ID -> set of annotations anchored there.
+    We use the end reading for the anchor."""
+    annolookup = {}
+    for ann in annotationlist:
+        anchor = _get_target(ann, 'END')
+        if anchor is not None:
+            akey = "%d" % anchor
+            if akey in annolookup:
+                annolookup.get(akey).append(ann)
+            else:
+                annolookup[akey] = [ann]
+    return annolookup
 
 
 def _is_ascii(s):
@@ -97,6 +135,22 @@ def _get_lemmareadings(vloc):
         return [vloc.get('before'), vloc.get('after')]
 
 
+def _get_rdgspan(baselist, annotation):
+    """Return a list of readings from BEGIN to END of the given annotation."""
+    begin = "%d" % _get_target(annotation, 'BEGIN')
+    end = "%d" % _get_target(annotation, 'END')
+    span = []
+    in_span = False
+    for r in baselist:
+        if r.get('id') == begin:
+            in_span = True
+        if in_span:
+            span.append(r)
+        if r.get('id') == end:
+            in_span = False
+    return span
+
+
 def _make_witstr(witlist):
     sigla = []
     for k in witlist:
@@ -129,14 +183,39 @@ def _get_vreadings(vloc, langtag, special):
     return '; '.join(stringified)
 
 
-def generate_latex(baselist, applist, langtag):
-    output = ''
+def _get_translation_to(annolist, rdgid):
+    if rdgid in annolist:
+        transannos = [x for x in annolist.get(rdgid) if x.get('label') == 'TRANSLATION']
+        if len(transannos) > 1:
+            raise("Multiple translations terminating at reading %s" % rdgid)
+        if len(transannos):
+            return transannos[0].get('properties').get('text')
+
+    return None
+
+
+def generate_latex(baselist, applist, annolist, langtag):
+    """Generate a reledpar output with the edited text on the left side and the translation, taken from
+    annotations, on the right side."""
+    translation = []
+
+    # Print the text
+    output = '\\begin{pairs}\n' \
+             '\\begin{Leftside}\n' \
+             '\\beginnumbering\n' \
+             '\\pstart\n'
     join_next = False
     for r in baselist:
         if not (join_next or r.get('join_prior', False) or len(output) == 0):
             output += ' '
-        if r.get('id') in applist:
-            vhere = applist.get(r.get('id'))
+        # See if we need to wrap the reading in an edtext notation (if there is a variant or a comment for it.)
+        vhere = applist.get(r.get('id'), [])
+        comments = []
+        if r.get('id') in annolist:
+            comments = [x for x in annolist.get(r.get('id')) if x.get('label') == 'COMMENT']
+        # Save any translation for later
+        translation.append(_get_translation_to(annolist, r.get('id')))
+        if len(vhere) > 0 or len(comments) > 0:
             # Generate the apparatus entry.
             output += "\\edtext{%s}{" % _lwrap(langtag, r)
             for vloc in vhere:
@@ -148,10 +227,25 @@ def generate_latex(baselist, applist, langtag):
                     special = None
                 output += "{\\lemma{%s} \\Afootnote{%s}}" % (
                     _lwrap(langtag, *_get_lemmareadings(vloc)), _get_vreadings(vloc, langtag, special))
+            for c in comments:
+                output += "{\\lemma{%s} \\Bfootnote{%s}}" % (
+                    _lwrap(langtag, *_get_rdgspan(baselist, c)), c.get('properties').get('text'))
             output += '}'
         else:
             output += _lwrap(langtag, r)
         join_next = r.get('join_next', False)
+    output += '\n\\pend\n' \
+              '\\endnumbering\n' \
+              '\\end{Leftside}\n' \
+              '\\begin{Rightside}\n' \
+              '\\beginnumbering\n' \
+              '\\pstart\n'
+    # Print the translation
+    output += ' '.join([t for t in translation if t is not None])
+    output += '\n\\pend\n' \
+              '\\endnumbering\n' \
+              '\\end{Rightside}\n' \
+              '\\end{pairs}\n'
     print(output)
 
 
@@ -212,6 +306,11 @@ if __name__ == '__main__':
         "--variantlist",
         help="Path to file containing a list of variants in Stemmarest JSON format"
     )
+    local.add_argument(
+        "-a",
+        "--annotationlist",
+        help="Path to file containing a list of annotations in Stemmarest JSON format"
+    )
 
     parser.add_argument(
         "--language",
@@ -235,5 +334,7 @@ if __name__ == '__main__':
     baselist = get_baselist(args)
     # Read in the variants and hash them accordingly
     applist = make_applookup(get_variants(args))
+    # Read in the annotations, if any
+    annotations = make_annolookup(get_annotations(args))
     # Spit out the LaTeX lines
-    generate_latex(baselist, applist, args.language)
+    generate_latex(baselist, applist, annotations, args.language)
